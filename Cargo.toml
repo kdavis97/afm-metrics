@@ -1,0 +1,13 @@
+[package]
+name = "afm-metrics"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A parser and CLI for Adobe Font Metrics (AFM) files with precise error locations"
+authors = ["kdavis97"]
+
+[[bin]]
+name = "afm"
+path = "src/bin/afm.rs"
+
+[dependencies]
