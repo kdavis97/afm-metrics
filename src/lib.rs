@@ -14,6 +14,7 @@ pub struct FontMetrics {
     pub full_name: Option<String>,
     pub family_name: Option<String>,
     pub glyphs: Vec<GlyphMetric>,
+    pub kern_pairs: Vec<KernPair>,
 }
 
 impl FontMetrics {
@@ -37,6 +38,15 @@ impl FontMetrics {
     pub fn glyph_named(&self, name: &str) -> Option<&GlyphMetric> {
         self.glyphs.iter().find(|g| g.name == name)
     }
+
+    /// The horizontal kerning adjustment between two glyph names, if the
+    /// pair appears in the file's `StartKernPairs` block.
+    pub fn kerning_between(&self, first: &str, second: &str) -> Option<f64> {
+        self.kern_pairs
+            .iter()
+            .find(|k| k.first == first && k.second == second)
+            .map(|k| k.adjustment)
+    }
 }
 
 /// A single glyph's character code, advance width, and PostScript name.
@@ -45,6 +55,15 @@ pub struct GlyphMetric {
     pub code: i32,
     pub width: f64,
     pub name: String,
+}
+
+/// A single horizontal kerning adjustment between two glyphs, as found in a
+/// `KPX` line within a `StartKernPairs` / `EndKernPairs` block.
+#[derive(Debug, Clone)]
+pub struct KernPair {
+    pub first: String,
+    pub second: String,
+    pub adjustment: f64,
 }
 
 /// An error produced while parsing an AFM file, located to a line and
@@ -101,7 +120,9 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
     }
 
     let mut declared_glyph_count: Option<usize> = None;
+    let mut declared_kern_count: Option<usize> = None;
     let mut in_char_metrics = false;
+    let mut in_kern_pairs = false;
     let mut saw_end_font_metrics = false;
     let mut last_line_no = first_line_no;
 
@@ -135,6 +156,28 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
             continue;
         }
 
+        if in_kern_pairs {
+            if line.trim_start().starts_with("EndKernPairs") {
+                in_kern_pairs = false;
+                if let Some(expected) = declared_kern_count {
+                    if metrics.kern_pairs.len() != expected {
+                        return Err(ParseError::new(
+                            line_no,
+                            1,
+                            format!(
+                                "StartKernPairs declared {} pairs but {} were found",
+                                expected,
+                                metrics.kern_pairs.len()
+                            ),
+                        ));
+                    }
+                }
+                continue;
+            }
+            metrics.kern_pairs.push(parse_kern_pair_line(line, line_no)?);
+            continue;
+        }
+
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
         let key_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
@@ -160,6 +203,21 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
                 })?;
                 declared_glyph_count = Some(count);
                 in_char_metrics = true;
+            }
+            "StartKernPairs" => {
+                let value_offset = indent + key_end + skip_ws(rest);
+                let count = value.parse::<usize>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, value_offset),
+                        format!(
+                            "expected a pair count after 'StartKernPairs', found '{}'",
+                            value
+                        ),
+                    )
+                })?;
+                declared_kern_count = Some(count);
+                in_kern_pairs = true;
             }
             "EndFontMetrics" => {
                 saw_end_font_metrics = true;
@@ -258,6 +316,64 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
     Ok(GlyphMetric { code, width, name })
 }
 
+/// Byte offset and text of the next whitespace-delimited token in `s`
+/// starting at or after `from`, if any remain.
+fn next_token(s: &str, from: usize) -> Option<(usize, &str)> {
+    let rest = &s[from..];
+    let start = from + skip_ws(rest);
+    if start >= s.len() {
+        return None;
+    }
+    let after = &s[start..];
+    let end = after.find(char::is_whitespace).unwrap_or(after.len());
+    Some((start, &s[start..start + end]))
+}
+
+fn parse_kern_pair_line(line: &str, line_no: usize) -> Result<KernPair, ParseError> {
+    let mut tokens = Vec::new();
+    let mut offset = 0usize;
+    while let Some((start, tok)) = next_token(line, offset) {
+        offset = start + tok.len();
+        tokens.push((start, tok));
+        if tokens.len() == 4 {
+            break;
+        }
+    }
+
+    match tokens.first() {
+        Some(&(_, "KPX")) => {}
+        _ => {
+            return Err(ParseError::new(
+                line_no,
+                1,
+                format!("expected a 'KPX' kerning pair, found '{}'", line.trim()),
+            ));
+        }
+    }
+
+    if tokens.len() < 4 {
+        let end_column = char_column(line, line.len());
+        return Err(ParseError::new(
+            line_no,
+            end_column,
+            "'KPX' line is missing the second glyph name or an adjustment value",
+        ));
+    }
+
+    let first = tokens[1].1.to_string();
+    let second = tokens[2].1.to_string();
+    let (adj_start, adj_tok) = tokens[3];
+    let adjustment = adj_tok.parse::<f64>().map_err(|_| {
+        ParseError::new(
+            line_no,
+            char_column(line, adj_start),
+            format!("kerning adjustment '{}' is not a valid number", adj_tok),
+        )
+    })?;
+
+    Ok(KernPair { first, second, adjustment })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +408,38 @@ mod tests {
         let input = "StartFontMetrics 4.1\nStartCharMetrics 2\nC 65 ; WX 667 ; N A ;\nEndCharMetrics\nEndFontMetrics\n";
         let err = parse(input).unwrap_err();
         assert_eq!(err.line, 4);
+    }
+
+    #[test]
+    fn parses_kern_pairs() {
+        let input = "StartFontMetrics 4.1\nStartKernPairs 2\nKPX A V -70\nKPX A W -50\nEndKernPairs\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        assert_eq!(metrics.kern_pairs.len(), 2);
+        assert_eq!(metrics.kerning_between("A", "V"), Some(-70.0));
+        assert_eq!(metrics.kerning_between("A", "Z"), None);
+    }
+
+    #[test]
+    fn reports_bad_kerning_adjustment_with_location() {
+        let input = "StartFontMetrics 4.1\nStartKernPairs 1\nKPX A V oops\nEndKernPairs\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        // "KPX A V " is 8 characters, so the adjustment token starts at column 9.
+        assert_eq!(err.column, 9);
+    }
+
+    #[test]
+    fn reports_kern_pair_count_mismatch() {
+        let input = "StartFontMetrics 4.1\nStartKernPairs 2\nKPX A V -70\nEndKernPairs\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 4);
+    }
+
+    #[test]
+    fn reports_kern_line_missing_kpx() {
+        let input = "StartFontMetrics 4.1\nStartKernPairs 1\nKP A V -70 0\nEndKernPairs\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert_eq!(err.column, 1);
     }
 }

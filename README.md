@@ -45,6 +45,7 @@ $ afm Helvetica.afm
 font: Helvetica
 full name: Helvetica
 glyphs: 314
+kern pairs: 2705
 average width: 532.1
 widest glyph: emdash (1000 units)
 
@@ -54,16 +55,18 @@ broken.afm:14:23: advance width 'WX oops' is not a valid number
 
 ## What's parsed right now
 
-The header fields `FontName`, `FullName`, and `FamilyName`, and the full
-`StartCharMetrics` / `EndCharMetrics` block: each glyph's code (`C`), advance
-width (`WX`), and PostScript name (`N`). Other header keys (bounding boxes,
-kerning pairs, composite glyphs) are skipped rather than rejected, since a
-file with fields this library doesn't understand yet is still a valid file.
+The header fields `FontName`, `FullName`, and `FamilyName`; the full
+`StartCharMetrics` / `EndCharMetrics` block (each glyph's code, advance
+width, and PostScript name); and the full `StartKernPairs` / `EndKernPairs`
+block (`KPX` horizontal kerning adjustments between glyph name pairs). Other
+header keys (bounding boxes, italic angle, composite glyphs) are skipped
+rather than rejected, since a file with fields this library doesn't
+understand yet is still a valid file.
 
 ## Status
 
-Early. See the issue tracker for what's next; kerning pairs (`StartKernPairs`)
-and the rest of the header key set are the obvious gaps.
+Early. See the issue tracker for what's next; the rest of the header key
+set (bounding boxes, italic angle) is the obvious gap.
 
 ## License
 

@@ -25,6 +25,7 @@ fn main() -> ExitCode {
             println!("font: {}", metrics.font_name.as_deref().unwrap_or("(unknown)"));
             println!("full name: {}", metrics.full_name.as_deref().unwrap_or("(unknown)"));
             println!("glyphs: {}", metrics.glyphs.len());
+            println!("kern pairs: {}", metrics.kern_pairs.len());
             if let Some(avg) = metrics.average_width() {
                 println!("average width: {:.1}", avg);
             }
