@@ -55,18 +55,21 @@ broken.afm:14:23: advance width 'WX oops' is not a valid number
 
 ## What's parsed right now
 
-The header fields `FontName`, `FullName`, and `FamilyName`; the full
-`StartCharMetrics` / `EndCharMetrics` block (each glyph's code, advance
-width, and PostScript name); and the full `StartKernPairs` / `EndKernPairs`
-block (`KPX` horizontal kerning adjustments between glyph name pairs). Other
-header keys (bounding boxes, italic angle, composite glyphs) are skipped
+The full set of global font metadata keys: `FontName`, `FullName`,
+`FamilyName`, `Weight`, `Version`, `Notice`, `EncodingScheme`,
+`ItalicAngle`, `IsFixedPitch`, `FontBBox`, `UnderlinePosition`,
+`UnderlineThickness`, `CapHeight`, `XHeight`, `Ascender`, `Descender`,
+`StdHW`, and `StdVW`; the full `StartCharMetrics` / `EndCharMetrics` block
+(each glyph's code, advance width, and PostScript name); and the full
+`StartKernPairs` / `EndKernPairs` block (`KPX` horizontal kerning
+adjustments between glyph name pairs). Unrecognized header keys are skipped
 rather than rejected, since a file with fields this library doesn't
 understand yet is still a valid file.
 
 ## Status
 
-Early. See the issue tracker for what's next; the rest of the header key
-set (bounding boxes, italic angle) is the obvious gap.
+Early. See the issue tracker for what's next; composite glyph (`CC`) and
+ligature (`L`) fields within `StartCharMetrics` are the obvious gap.
 
 ## License
 

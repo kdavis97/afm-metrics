@@ -13,6 +13,21 @@ pub struct FontMetrics {
     pub font_name: Option<String>,
     pub full_name: Option<String>,
     pub family_name: Option<String>,
+    pub weight: Option<String>,
+    pub version: Option<String>,
+    pub notice: Option<String>,
+    pub encoding_scheme: Option<String>,
+    pub italic_angle: Option<f64>,
+    pub is_fixed_pitch: Option<bool>,
+    pub font_bbox: Option<FontBBox>,
+    pub underline_position: Option<f64>,
+    pub underline_thickness: Option<f64>,
+    pub cap_height: Option<f64>,
+    pub x_height: Option<f64>,
+    pub ascender: Option<f64>,
+    pub descender: Option<f64>,
+    pub std_hw: Option<f64>,
+    pub std_vw: Option<f64>,
     pub glyphs: Vec<GlyphMetric>,
     pub kern_pairs: Vec<KernPair>,
 }
@@ -47,6 +62,17 @@ impl FontMetrics {
             .find(|k| k.first == first && k.second == second)
             .map(|k| k.adjustment)
     }
+}
+
+/// The font's bounding box, as declared by a `FontBBox` header line: the
+/// lower-left and upper-right corners of the smallest rectangle enclosing
+/// every glyph, in the font's design units.
+#[derive(Debug, Clone, Copy)]
+pub struct FontBBox {
+    pub llx: f64,
+    pub lly: f64,
+    pub urx: f64,
+    pub ury: f64,
 }
 
 /// A single glyph's character code, advance width, and PostScript name.
@@ -184,13 +210,58 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
         let key = &trimmed[..key_end];
         let rest = &trimmed[key_end..];
         let value = rest.trim();
+        let value_offset = indent + key_end + skip_ws(rest);
 
         match key {
             "FontName" => metrics.font_name = Some(value.to_string()),
             "FullName" => metrics.full_name = Some(value.to_string()),
             "FamilyName" => metrics.family_name = Some(value.to_string()),
+            "Weight" => metrics.weight = Some(value.to_string()),
+            "Version" => metrics.version = Some(value.to_string()),
+            "Notice" => metrics.notice = Some(value.to_string()),
+            "EncodingScheme" => metrics.encoding_scheme = Some(value.to_string()),
+            "ItalicAngle" => {
+                metrics.italic_angle = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "UnderlinePosition" => {
+                metrics.underline_position =
+                    Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "UnderlineThickness" => {
+                metrics.underline_thickness =
+                    Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "CapHeight" => {
+                metrics.cap_height = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "XHeight" => {
+                metrics.x_height = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "Ascender" => {
+                metrics.ascender = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "Descender" => {
+                metrics.descender = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "StdHW" => {
+                metrics.std_hw = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "StdVW" => {
+                metrics.std_vw = Some(parse_number_field(key, value, line, value_offset, line_no)?)
+            }
+            "IsFixedPitch" => {
+                metrics.is_fixed_pitch = Some(value.parse::<bool>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, value_offset),
+                        format!("'IsFixedPitch' value '{}' is not 'true' or 'false'", value),
+                    )
+                })?);
+            }
+            "FontBBox" => {
+                metrics.font_bbox = Some(parse_font_bbox(line, value_offset, line_no)?);
+            }
             "StartCharMetrics" => {
-                let value_offset = indent + key_end + skip_ws(rest);
                 let count = value.parse::<usize>().map_err(|_| {
                     ParseError::new(
                         line_no,
@@ -205,7 +276,6 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
                 in_char_metrics = true;
             }
             "StartKernPairs" => {
-                let value_offset = indent + key_end + skip_ws(rest);
                 let count = value.parse::<usize>().map_err(|_| {
                     ParseError::new(
                         line_no,
@@ -246,6 +316,49 @@ fn skip_ws(s: &str) -> usize {
 /// Convert a byte offset within `line` to a 1-based column number.
 fn char_column(line: &str, byte_offset: usize) -> usize {
     line[..byte_offset.min(line.len())].chars().count() + 1
+}
+
+/// Parse a single-value numeric header field (e.g. `ItalicAngle -12.5`),
+/// producing an error located at the value's column if it isn't a number.
+fn parse_number_field(
+    key: &str,
+    value: &str,
+    line: &str,
+    value_offset: usize,
+    line_no: usize,
+) -> Result<f64, ParseError> {
+    value.parse::<f64>().map_err(|_| {
+        ParseError::new(
+            line_no,
+            char_column(line, value_offset),
+            format!("'{}' value '{}' is not a valid number", key, value),
+        )
+    })
+}
+
+/// Parse a `FontBBox` header line's four numbers (llx, lly, urx, ury).
+fn parse_font_bbox(line: &str, start: usize, line_no: usize) -> Result<FontBBox, ParseError> {
+    const FIELDS: [&str; 4] = ["llx", "lly", "urx", "ury"];
+    let mut values = [0.0f64; 4];
+    let mut offset = start;
+    for (i, field_name) in FIELDS.iter().enumerate() {
+        let (tok_start, tok) = next_token(line, offset).ok_or_else(|| {
+            ParseError::new(
+                line_no,
+                char_column(line, line.len()),
+                format!("'FontBBox' is missing its {} value", field_name),
+            )
+        })?;
+        values[i] = tok.parse::<f64>().map_err(|_| {
+            ParseError::new(
+                line_no,
+                char_column(line, tok_start),
+                format!("'FontBBox' {} value '{}' is not a valid number", field_name, tok),
+            )
+        })?;
+        offset = tok_start + tok.len();
+    }
+    Ok(FontBBox { llx: values[0], lly: values[1], urx: values[2], ury: values[3] })
 }
 
 fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, ParseError> {
@@ -441,5 +554,49 @@ mod tests {
         let err = parse(input).unwrap_err();
         assert_eq!(err.line, 3);
         assert_eq!(err.column, 1);
+    }
+
+    #[test]
+    fn parses_header_fields() {
+        let input = "StartFontMetrics 4.1\nWeight Bold\nItalicAngle -12.5\nIsFixedPitch false\nFontBBox -166 -225 1000 931\nUnderlinePosition -100\nUnderlineThickness 50\nCapHeight 718\nXHeight 523\nAscender 718\nDescender -207\nStdHW 80\nStdVW 88\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        assert_eq!(metrics.weight.as_deref(), Some("Bold"));
+        assert_eq!(metrics.italic_angle, Some(-12.5));
+        assert_eq!(metrics.is_fixed_pitch, Some(false));
+        let bbox = metrics.font_bbox.expect("bbox should be set");
+        assert_eq!((bbox.llx, bbox.lly, bbox.urx, bbox.ury), (-166.0, -225.0, 1000.0, 931.0));
+        assert_eq!(metrics.underline_position, Some(-100.0));
+        assert_eq!(metrics.underline_thickness, Some(50.0));
+        assert_eq!(metrics.cap_height, Some(718.0));
+        assert_eq!(metrics.x_height, Some(523.0));
+        assert_eq!(metrics.ascender, Some(718.0));
+        assert_eq!(metrics.descender, Some(-207.0));
+        assert_eq!(metrics.std_hw, Some(80.0));
+        assert_eq!(metrics.std_vw, Some(88.0));
+    }
+
+    #[test]
+    fn reports_bad_italic_angle_with_location() {
+        let input = "StartFontMetrics 4.1\nItalicAngle sideways\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 2);
+        // "ItalicAngle " is 12 characters, so the value starts at column 13.
+        assert_eq!(err.column, 13);
+    }
+
+    #[test]
+    fn reports_incomplete_font_bbox() {
+        let input = "StartFontMetrics 4.1\nFontBBox -166 -225 1000\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 2);
+    }
+
+    #[test]
+    fn reports_bad_is_fixed_pitch() {
+        let input = "StartFontMetrics 4.1\nIsFixedPitch yes\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 2);
+        // "IsFixedPitch " is 13 characters, so the value starts at column 14.
+        assert_eq!(err.column, 14);
     }
 }

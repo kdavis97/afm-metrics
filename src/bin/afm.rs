@@ -26,6 +26,12 @@ fn main() -> ExitCode {
             println!("full name: {}", metrics.full_name.as_deref().unwrap_or("(unknown)"));
             println!("glyphs: {}", metrics.glyphs.len());
             println!("kern pairs: {}", metrics.kern_pairs.len());
+            if let Some(angle) = metrics.italic_angle {
+                println!("italic angle: {}", angle);
+            }
+            if let Some(bbox) = &metrics.font_bbox {
+                println!("bounding box: [{} {} {} {}]", bbox.llx, bbox.lly, bbox.urx, bbox.ury);
+            }
             if let Some(avg) = metrics.average_width() {
                 println!("average width: {:.1}", avg);
             }
