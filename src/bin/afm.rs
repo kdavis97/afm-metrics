@@ -3,11 +3,22 @@ use std::fs;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
-    let path = match args.next() {
+    let mut json = false;
+    let mut path: Option<String> = None;
+    for arg in env::args().skip(1) {
+        if arg == "--json" {
+            json = true;
+        } else if path.is_none() {
+            path = Some(arg);
+        } else {
+            eprintln!("usage: afm [--json] <font.afm>");
+            return ExitCode::from(2);
+        }
+    }
+    let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: afm <font.afm>");
+            eprintln!("usage: afm [--json] <font.afm>");
             return ExitCode::from(2);
         }
     };
@@ -22,6 +33,10 @@ fn main() -> ExitCode {
 
     match afm_metrics::parse(&contents) {
         Ok(metrics) => {
+            if json {
+                println!("{}", metrics.to_json());
+                return ExitCode::SUCCESS;
+            }
             println!("font: {}", metrics.font_name.as_deref().unwrap_or("(unknown)"));
             println!("full name: {}", metrics.full_name.as_deref().unwrap_or("(unknown)"));
             println!("glyphs: {}", metrics.glyphs.len());
@@ -41,7 +56,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("{}:{}:{}: {}", path, err.line, err.column, err.message);
+            if json {
+                println!("{}", err.to_json());
+            } else {
+                eprintln!("{}:{}:{}: {}", path, err.line, err.column, err.message);
+            }
             ExitCode::from(1)
         }
     }

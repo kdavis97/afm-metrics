@@ -53,6 +53,16 @@ $ afm broken.afm
 broken.afm:14:23: advance width 'WX oops' is not a valid number
 ```
 
+Pass `--json` for machine-readable output. On success it prints the full
+parsed `FontMetrics` as a JSON object; on failure it prints `{"line":
+..., "column": ..., "message": ...}` instead of the `path:line:col:
+message` string, and the process still exits non-zero:
+
+```
+$ afm --json broken.afm
+{"line":14,"column":23,"message":"advance width 'WX oops' is not a valid number"}
+```
+
 ## What's parsed right now
 
 The full set of global font metadata keys: `FontName`, `FullName`,

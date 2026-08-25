@@ -62,6 +62,135 @@ impl FontMetrics {
             .find(|k| k.first == first && k.second == second)
             .map(|k| k.adjustment)
     }
+
+    /// Render the parsed metrics as a JSON object.
+    ///
+    /// Hand rolled rather than pulled in from a crate: the shape is fixed
+    /// and small enough that a dependency would cost more than it saves.
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("{");
+        out.push_str(&format!("\"font_name\":{},", json_opt_string(&self.font_name)));
+        out.push_str(&format!("\"full_name\":{},", json_opt_string(&self.full_name)));
+        out.push_str(&format!("\"family_name\":{},", json_opt_string(&self.family_name)));
+        out.push_str(&format!("\"weight\":{},", json_opt_string(&self.weight)));
+        out.push_str(&format!("\"version\":{},", json_opt_string(&self.version)));
+        out.push_str(&format!("\"notice\":{},", json_opt_string(&self.notice)));
+        out.push_str(&format!(
+            "\"encoding_scheme\":{},",
+            json_opt_string(&self.encoding_scheme)
+        ));
+        out.push_str(&format!("\"italic_angle\":{},", json_opt_f64(self.italic_angle)));
+        out.push_str(&format!(
+            "\"is_fixed_pitch\":{},",
+            match self.is_fixed_pitch {
+                Some(b) => b.to_string(),
+                None => "null".to_string(),
+            }
+        ));
+        out.push_str("\"font_bbox\":");
+        match &self.font_bbox {
+            Some(b) => out.push_str(&format!(
+                "{{\"llx\":{},\"lly\":{},\"urx\":{},\"ury\":{}}}",
+                format_f64_json(b.llx),
+                format_f64_json(b.lly),
+                format_f64_json(b.urx),
+                format_f64_json(b.ury)
+            )),
+            None => out.push_str("null"),
+        }
+        out.push(',');
+        out.push_str(&format!(
+            "\"underline_position\":{},",
+            json_opt_f64(self.underline_position)
+        ));
+        out.push_str(&format!(
+            "\"underline_thickness\":{},",
+            json_opt_f64(self.underline_thickness)
+        ));
+        out.push_str(&format!("\"cap_height\":{},", json_opt_f64(self.cap_height)));
+        out.push_str(&format!("\"x_height\":{},", json_opt_f64(self.x_height)));
+        out.push_str(&format!("\"ascender\":{},", json_opt_f64(self.ascender)));
+        out.push_str(&format!("\"descender\":{},", json_opt_f64(self.descender)));
+        out.push_str(&format!("\"std_hw\":{},", json_opt_f64(self.std_hw)));
+        out.push_str(&format!("\"std_vw\":{},", json_opt_f64(self.std_vw)));
+
+        out.push_str("\"glyphs\":[");
+        for (i, g) in self.glyphs.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"code\":{},\"width\":{},\"name\":\"{}\"}}",
+                g.code,
+                format_f64_json(g.width),
+                json_escape(&g.name)
+            ));
+        }
+        out.push_str("],");
+
+        out.push_str("\"kern_pairs\":[");
+        for (i, k) in self.kern_pairs.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"first\":\"{}\",\"second\":\"{}\",\"adjustment\":{}}}",
+                json_escape(&k.first),
+                json_escape(&k.second),
+                format_f64_json(k.adjustment)
+            ));
+        }
+        out.push_str("]");
+
+        out.push('}');
+        out
+    }
+}
+
+fn json_opt_string(value: &Option<String>) -> String {
+    match value {
+        Some(s) => format!("\"{}\"", json_escape(s)),
+        None => "null".to_string(),
+    }
+}
+
+fn json_opt_f64(value: Option<f64>) -> String {
+    match value {
+        Some(n) => format_f64_json(n),
+        None => "null".to_string(),
+    }
+}
+
+/// Format an `f64` as a JSON number literal.
+///
+/// AFM's numeric fields are parsed with `f64::from_str`, which (unlike
+/// JSON) accepts "inf", "-inf", and "nan". Emitting those bare would
+/// produce output no JSON parser can read, so they're quoted instead.
+fn format_f64_json(n: f64) -> String {
+    if n.is_nan() {
+        "\"NaN\"".to_string()
+    } else if n.is_infinite() {
+        if n > 0.0 { "\"Infinity\"".to_string() } else { "\"-Infinity\"".to_string() }
+    } else {
+        format!("{}", n)
+    }
+}
+
+/// Escape a string for embedding in a JSON string literal.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The font's bounding box, as declared by a `FontBBox` header line: the
@@ -105,6 +234,17 @@ pub struct ParseError {
 impl ParseError {
     fn new(line: usize, column: usize, message: impl Into<String>) -> Self {
         ParseError { line, column, message: message.into() }
+    }
+
+    /// Render this error as a JSON object, for callers that want structured
+    /// output (e.g. the CLI's `--json` mode) instead of a formatted string.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"line\":{},\"column\":{},\"message\":\"{}\"}}",
+            self.line,
+            self.column,
+            json_escape(&self.message)
+        )
     }
 }
 
@@ -589,6 +729,42 @@ mod tests {
         let input = "StartFontMetrics 4.1\nFontBBox -166 -225 1000\nEndFontMetrics\n";
         let err = parse(input).unwrap_err();
         assert_eq!(err.line, 2);
+    }
+
+    #[test]
+    fn renders_metrics_as_json() {
+        let metrics = parse(SAMPLE).expect("sample should parse");
+        let json = metrics.to_json();
+        assert!(json.contains("\"font_name\":\"Helvetica\""));
+        assert!(json.contains("\"code\":65"));
+        assert!(json.contains("\"name\":\"A\""));
+        assert!(json.contains("\"width\":667"));
+        assert!(json.contains("\"font_bbox\":null"));
+    }
+
+    #[test]
+    fn json_escapes_special_characters_in_names() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 65 ; WX 667 ; N quote\"and\\backslash ;\nEndCharMetrics\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        let json = metrics.to_json();
+        assert!(json.contains("quote\\\"and\\\\backslash"));
+    }
+
+    #[test]
+    fn json_quotes_non_finite_numbers() {
+        let input = "StartFontMetrics 4.1\nItalicAngle inf\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        assert!(metrics.italic_angle.unwrap().is_infinite());
+        assert!(metrics.to_json().contains("\"italic_angle\":\"Infinity\""));
+    }
+
+    #[test]
+    fn renders_parse_error_as_json() {
+        let err = parse("FontName Helvetica\n").unwrap_err();
+        let json = err.to_json();
+        assert!(json.contains("\"line\":1"));
+        assert!(json.contains("\"column\":1"));
+        assert!(json.contains("expected 'StartFontMetrics'"));
     }
 
     #[test]
