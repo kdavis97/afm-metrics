@@ -69,17 +69,17 @@ The full set of global font metadata keys: `FontName`, `FullName`,
 `FamilyName`, `Weight`, `Version`, `Notice`, `EncodingScheme`,
 `ItalicAngle`, `IsFixedPitch`, `FontBBox`, `UnderlinePosition`,
 `UnderlineThickness`, `CapHeight`, `XHeight`, `Ascender`, `Descender`,
-`StdHW`, and `StdVW`; the full `StartCharMetrics` / `EndCharMetrics` block
-(each glyph's code, advance width, and PostScript name); and the full
-`StartKernPairs` / `EndKernPairs` block (`KPX` horizontal kerning
+`StdHW`, and `StdVW`; the full `StartCharMetrics` / `EndCharMetrics` block,
+including each glyph's code, advance width, and PostScript name, its `L`
+ligature substitutions, and its `CC`/`PCC` composite glyph parts; and the
+full `StartKernPairs` / `EndKernPairs` block (`KPX` horizontal kerning
 adjustments between glyph name pairs). Unrecognized header keys are skipped
 rather than rejected, since a file with fields this library doesn't
 understand yet is still a valid file.
 
 ## Status
 
-Early. See the issue tracker for what's next; composite glyph (`CC`) and
-ligature (`L`) fields within `StartCharMetrics` are the obvious gap.
+Early. See the issue tracker for what's next.
 
 ## License
 

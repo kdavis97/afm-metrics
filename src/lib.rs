@@ -120,11 +120,34 @@ impl FontMetrics {
                 out.push(',');
             }
             out.push_str(&format!(
-                "{{\"code\":{},\"width\":{},\"name\":\"{}\"}}",
+                "{{\"code\":{},\"width\":{},\"name\":\"{}\",\"ligatures\":[",
                 g.code,
                 format_f64_json(g.width),
                 json_escape(&g.name)
             ));
+            for (j, l) in g.ligatures.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"successor\":\"{}\",\"ligature\":\"{}\"}}",
+                    json_escape(&l.successor),
+                    json_escape(&l.ligature)
+                ));
+            }
+            out.push_str("],\"composite_parts\":[");
+            for (j, p) in g.composite_parts.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"name\":\"{}\",\"x\":{},\"y\":{}}}",
+                    json_escape(&p.name),
+                    format_f64_json(p.x),
+                    format_f64_json(p.y)
+                ));
+            }
+            out.push_str("]}");
         }
         out.push_str("],");
 
@@ -210,6 +233,29 @@ pub struct GlyphMetric {
     pub code: i32,
     pub width: f64,
     pub name: String,
+    /// `L successor ligature` fields: pairing this glyph with `successor`
+    /// produces the glyph named `ligature` (e.g. "f" + "i" -> "fi").
+    pub ligatures: Vec<Ligature>,
+    /// `PCC` fields under a `CC` declaration: the pieces this glyph is
+    /// composed of, each placed at an (x, y) offset from the glyph origin.
+    pub composite_parts: Vec<CompositePart>,
+}
+
+/// One `L` field on a char metrics line: this glyph followed by
+/// `successor` forms the ligature glyph `ligature`.
+#[derive(Debug, Clone)]
+pub struct Ligature {
+    pub successor: String,
+    pub ligature: String,
+}
+
+/// One `PCC` field on a char metrics line: a component glyph placed at an
+/// (x, y) offset to build up a composite (accented) glyph.
+#[derive(Debug, Clone)]
+pub struct CompositePart {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
 }
 
 /// A single horizontal kerning adjustment between two glyphs, as found in a
@@ -505,6 +551,9 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
     let mut code: Option<i32> = None;
     let mut width: Option<f64> = None;
     let mut name: Option<String> = None;
+    let mut ligatures = Vec::new();
+    let mut composite_parts = Vec::new();
+    let mut declared_composite_count: Option<usize> = None;
 
     let mut byte_offset = 0usize;
     for segment in line.split(';') {
@@ -517,10 +566,15 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
         }
         let field_start = seg_start + skip_ws(segment);
         let field_column = char_column(line, field_start);
+        // Bound token lookups to this field so a truncated `L`/`CC`/`PCC`
+        // field errors out instead of reading tokens from the next field
+        // across the ';' delimiter.
+        let field_end = seg_start + segment.len();
 
         let key_end = field.find(char::is_whitespace).unwrap_or(field.len());
         let key = &field[..key_end];
         let value = field[key_end..].trim();
+        let value_start = field_start + key_end + skip_ws(&field[key_end..]);
 
         match key {
             "C" => {
@@ -551,6 +605,88 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
                 }
                 name = Some(value.to_string());
             }
+            "L" => {
+                let field_line = &line[..field_end];
+                let (succ_start, succ) = next_token(field_line, value_start).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        field_column,
+                        "'L' field is missing its successor and ligature glyph names",
+                    )
+                })?;
+                let after_succ = succ_start + succ.len();
+                let (_, lig) = next_token(field_line, after_succ).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, after_succ),
+                        "'L' field is missing its ligature glyph name",
+                    )
+                })?;
+                ligatures.push(Ligature { successor: succ.to_string(), ligature: lig.to_string() });
+            }
+            "CC" => {
+                let field_line = &line[..field_end];
+                let (name_start, cc_name) = next_token(field_line, value_start).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        field_column,
+                        "'CC' field is missing its composite glyph name and part count",
+                    )
+                })?;
+                let after_name = name_start + cc_name.len();
+                let (count_start, count_tok) = next_token(field_line, after_name).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, after_name),
+                        "'CC' field is missing its composite part count",
+                    )
+                })?;
+                let count = count_tok.parse::<usize>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, count_start),
+                        format!("'CC' part count '{}' is not a valid integer", count_tok),
+                    )
+                })?;
+                declared_composite_count = Some(count);
+            }
+            "PCC" => {
+                let field_line = &line[..field_end];
+                let (name_start, part_name) = next_token(field_line, value_start).ok_or_else(|| {
+                    ParseError::new(line_no, field_column, "'PCC' field is missing its piece name")
+                })?;
+                let after_name = name_start + part_name.len();
+                let (x_start, x_tok) = next_token(field_line, after_name).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, after_name),
+                        "'PCC' field is missing its x displacement",
+                    )
+                })?;
+                let x = x_tok.parse::<f64>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, x_start),
+                        format!("'PCC' x displacement '{}' is not a valid number", x_tok),
+                    )
+                })?;
+                let after_x = x_start + x_tok.len();
+                let (y_start, y_tok) = next_token(field_line, after_x).ok_or_else(|| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, after_x),
+                        "'PCC' field is missing its y displacement",
+                    )
+                })?;
+                let y = y_tok.parse::<f64>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, y_start),
+                        format!("'PCC' y displacement '{}' is not a valid number", y_tok),
+                    )
+                })?;
+                composite_parts.push(CompositePart { name: part_name.to_string(), x, y });
+            }
             _ => {}
         }
     }
@@ -565,8 +701,21 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
     let name = name.ok_or_else(|| {
         ParseError::new(line_no, end_column, "char metrics line is missing an 'N' (name) field")
     })?;
+    if let Some(expected) = declared_composite_count {
+        if composite_parts.len() != expected {
+            return Err(ParseError::new(
+                line_no,
+                end_column,
+                format!(
+                    "'CC' declared {} composite parts but {} 'PCC' fields were found",
+                    expected,
+                    composite_parts.len()
+                ),
+            ));
+        }
+    }
 
-    Ok(GlyphMetric { code, width, name })
+    Ok(GlyphMetric { code, width, name, ligatures, composite_parts })
 }
 
 /// Byte offset and text of the next whitespace-delimited token in `s`
@@ -765,6 +914,63 @@ mod tests {
         assert!(json.contains("\"line\":1"));
         assert!(json.contains("\"column\":1"));
         assert!(json.contains("expected 'StartFontMetrics'"));
+    }
+
+    #[test]
+    fn parses_ligature_fields() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 102 ; WX 333 ; N f ; L i fi ; L l fl ;\nEndCharMetrics\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        let f = metrics.glyph_named("f").expect("glyph f");
+        assert_eq!(f.ligatures.len(), 2);
+        assert_eq!(f.ligatures[0].successor, "i");
+        assert_eq!(f.ligatures[0].ligature, "fi");
+        assert_eq!(f.ligatures[1].successor, "l");
+        assert_eq!(f.ligatures[1].ligature, "fl");
+    }
+
+    #[test]
+    fn reports_incomplete_ligature_field() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 102 ; WX 333 ; N f ; L i ;\nEndCharMetrics\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.message.contains("ligature glyph name"));
+    }
+
+    #[test]
+    fn parses_composite_glyph_fields() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 193 ; WX 667 ; N Aacute ; CC A 2 ; PCC A 0 0 ; PCC acute 132 0 ;\nEndCharMetrics\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        let aacute = metrics.glyph_named("Aacute").expect("glyph Aacute");
+        assert_eq!(aacute.composite_parts.len(), 2);
+        assert_eq!(aacute.composite_parts[0].name, "A");
+        assert_eq!((aacute.composite_parts[0].x, aacute.composite_parts[0].y), (0.0, 0.0));
+        assert_eq!(aacute.composite_parts[1].name, "acute");
+        assert_eq!((aacute.composite_parts[1].x, aacute.composite_parts[1].y), (132.0, 0.0));
+    }
+
+    #[test]
+    fn reports_composite_part_count_mismatch() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 193 ; WX 667 ; N Aacute ; CC A 2 ; PCC A 0 0 ;\nEndCharMetrics\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.message.contains("declared 2 composite parts but 1"));
+    }
+
+    #[test]
+    fn reports_bad_pcc_displacement() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 193 ; WX 667 ; N Aacute ; CC A 1 ; PCC A x 0 ;\nEndCharMetrics\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.message.contains("x displacement"));
+    }
+
+    #[test]
+    fn ligatures_and_composites_round_trip_through_json() {
+        let input = "StartFontMetrics 4.1\nStartCharMetrics 1\nC 193 ; WX 667 ; N Aacute ; CC A 1 ; PCC A 0 0 ;\nEndCharMetrics\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        let json = metrics.to_json();
+        assert!(json.contains("\"composite_parts\":[{\"name\":\"A\",\"x\":0,\"y\":0}]"));
+        assert!(json.contains("\"ligatures\":[]"));
     }
 
     #[test]
