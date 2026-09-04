@@ -63,6 +63,23 @@ $ afm --json broken.afm
 {"line":14,"column":23,"message":"advance width 'WX oops' is not a valid number"}
 ```
 
+The `glyph` subcommand looks up a single glyph by name or character code
+and prints its width, ligatures, and composite parts. The query is tried
+as a name first, then as a code:
+
+```
+$ afm glyph Helvetica.afm A
+name: A
+code: 65
+width: 667
+
+$ afm glyph --json Helvetica.afm 65
+{"code":65,"width":667,"name":"A","ligatures":[],"composite_parts":[]}
+
+$ afm glyph Helvetica.afm nonexistent
+Helvetica.afm: no glyph named or coded 'nonexistent'
+```
+
 ## What's parsed right now
 
 The full set of global font metadata keys: `FontName`, `FullName`,

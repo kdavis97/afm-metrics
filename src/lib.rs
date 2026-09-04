@@ -54,6 +54,13 @@ impl FontMetrics {
         self.glyphs.iter().find(|g| g.name == name)
     }
 
+    /// Look up a glyph by its character code, as declared in its `C` field.
+    /// AFM allows unencoded glyphs with a code of -1, and does not require
+    /// codes to be unique, so this returns the first match.
+    pub fn glyph_by_code(&self, code: i32) -> Option<&GlyphMetric> {
+        self.glyphs.iter().find(|g| g.code == code)
+    }
+
     /// The horizontal kerning adjustment between two glyph names, if the
     /// pair appears in the file's `StartKernPairs` block.
     pub fn kerning_between(&self, first: &str, second: &str) -> Option<f64> {
@@ -119,35 +126,7 @@ impl FontMetrics {
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&format!(
-                "{{\"code\":{},\"width\":{},\"name\":\"{}\",\"ligatures\":[",
-                g.code,
-                format_f64_json(g.width),
-                json_escape(&g.name)
-            ));
-            for (j, l) in g.ligatures.iter().enumerate() {
-                if j > 0 {
-                    out.push(',');
-                }
-                out.push_str(&format!(
-                    "{{\"successor\":\"{}\",\"ligature\":\"{}\"}}",
-                    json_escape(&l.successor),
-                    json_escape(&l.ligature)
-                ));
-            }
-            out.push_str("],\"composite_parts\":[");
-            for (j, p) in g.composite_parts.iter().enumerate() {
-                if j > 0 {
-                    out.push(',');
-                }
-                out.push_str(&format!(
-                    "{{\"name\":\"{}\",\"x\":{},\"y\":{}}}",
-                    json_escape(&p.name),
-                    format_f64_json(p.x),
-                    format_f64_json(p.y)
-                ));
-            }
-            out.push_str("]}");
+            out.push_str(&g.to_json());
         }
         out.push_str("],");
 
@@ -239,6 +218,44 @@ pub struct GlyphMetric {
     /// `PCC` fields under a `CC` declaration: the pieces this glyph is
     /// composed of, each placed at an (x, y) offset from the glyph origin.
     pub composite_parts: Vec<CompositePart>,
+}
+
+impl GlyphMetric {
+    /// Render this glyph as a JSON object. Used both as an entry in
+    /// `FontMetrics::to_json`'s "glyphs" array and standalone by the CLI's
+    /// `glyph` subcommand, so the shape is identical in both places.
+    pub fn to_json(&self) -> String {
+        let mut out = format!(
+            "{{\"code\":{},\"width\":{},\"name\":\"{}\",\"ligatures\":[",
+            self.code,
+            format_f64_json(self.width),
+            json_escape(&self.name)
+        );
+        for (j, l) in self.ligatures.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"successor\":\"{}\",\"ligature\":\"{}\"}}",
+                json_escape(&l.successor),
+                json_escape(&l.ligature)
+            ));
+        }
+        out.push_str("],\"composite_parts\":[");
+        for (j, p) in self.composite_parts.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"name\":\"{}\",\"x\":{},\"y\":{}}}",
+                json_escape(&p.name),
+                format_f64_json(p.x),
+                format_f64_json(p.y)
+            ));
+        }
+        out.push_str("]}");
+        out
+    }
 }
 
 /// One `L` field on a char metrics line: this glyph followed by
@@ -971,6 +988,20 @@ mod tests {
         let json = metrics.to_json();
         assert!(json.contains("\"composite_parts\":[{\"name\":\"A\",\"x\":0,\"y\":0}]"));
         assert!(json.contains("\"ligatures\":[]"));
+    }
+
+    #[test]
+    fn looks_up_glyph_by_code() {
+        let metrics = parse(SAMPLE).expect("sample should parse");
+        assert_eq!(metrics.glyph_by_code(65).unwrap().name, "A");
+        assert!(metrics.glyph_by_code(999).is_none());
+    }
+
+    #[test]
+    fn glyph_metric_to_json_matches_font_metrics_to_json() {
+        let metrics = parse(SAMPLE).expect("sample should parse");
+        let a = metrics.glyph_named("A").unwrap();
+        assert!(metrics.to_json().contains(&a.to_json()));
     }
 
     #[test]
