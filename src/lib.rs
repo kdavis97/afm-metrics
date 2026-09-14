@@ -30,6 +30,7 @@ pub struct FontMetrics {
     pub std_vw: Option<f64>,
     pub glyphs: Vec<GlyphMetric>,
     pub kern_pairs: Vec<KernPair>,
+    pub composites: Vec<CompositeGlyph>,
 }
 
 impl FontMetrics {
@@ -141,6 +142,15 @@ impl FontMetrics {
                 json_escape(&k.second),
                 format_f64_json(k.adjustment)
             ));
+        }
+        out.push_str("],");
+
+        out.push_str("\"composites\":[");
+        for (i, c) in self.composites.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&c.to_json());
         }
         out.push_str("]");
 
@@ -275,6 +285,35 @@ pub struct CompositePart {
     pub y: f64,
 }
 
+/// A composite (accented) glyph declared in a `StartComposites` /
+/// `EndComposites` block. This is the same `CC`/`PCC` syntax already used
+/// inline on `CharMetrics` lines, just standing on its own instead of being
+/// attached to a glyph's code and width.
+#[derive(Debug, Clone)]
+pub struct CompositeGlyph {
+    pub name: String,
+    pub parts: Vec<CompositePart>,
+}
+
+impl CompositeGlyph {
+    pub fn to_json(&self) -> String {
+        let mut out = format!("{{\"name\":\"{}\",\"parts\":[", json_escape(&self.name));
+        for (j, p) in self.parts.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"name\":\"{}\",\"x\":{},\"y\":{}}}",
+                json_escape(&p.name),
+                format_f64_json(p.x),
+                format_f64_json(p.y)
+            ));
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
 /// A single horizontal kerning adjustment between two glyphs, as found in a
 /// `KPX` line within a `StartKernPairs` / `EndKernPairs` block.
 #[derive(Debug, Clone)]
@@ -350,8 +389,10 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
 
     let mut declared_glyph_count: Option<usize> = None;
     let mut declared_kern_count: Option<usize> = None;
+    let mut declared_composite_count: Option<usize> = None;
     let mut in_char_metrics = false;
     let mut in_kern_pairs = false;
+    let mut in_composites = false;
     let mut saw_end_font_metrics = false;
     let mut last_line_no = first_line_no;
 
@@ -404,6 +445,28 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
                 continue;
             }
             metrics.kern_pairs.push(parse_kern_pair_line(line, line_no)?);
+            continue;
+        }
+
+        if in_composites {
+            if line.trim_start().starts_with("EndComposites") {
+                in_composites = false;
+                if let Some(expected) = declared_composite_count {
+                    if metrics.composites.len() != expected {
+                        return Err(ParseError::new(
+                            line_no,
+                            1,
+                            format!(
+                                "StartComposites declared {} composites but {} were found",
+                                expected,
+                                metrics.composites.len()
+                            ),
+                        ));
+                    }
+                }
+                continue;
+            }
+            metrics.composites.push(parse_composite_line(line, line_no)?);
             continue;
         }
 
@@ -491,6 +554,20 @@ pub fn parse(input: &str) -> Result<FontMetrics, ParseError> {
                 })?;
                 declared_kern_count = Some(count);
                 in_kern_pairs = true;
+            }
+            "StartComposites" => {
+                let count = value.parse::<usize>().map_err(|_| {
+                    ParseError::new(
+                        line_no,
+                        char_column(line, value_offset),
+                        format!(
+                            "expected a composite count after 'StartComposites', found '{}'",
+                            value
+                        ),
+                    )
+                })?;
+                declared_composite_count = Some(count);
+                in_composites = true;
             }
             "EndFontMetrics" => {
                 saw_end_font_metrics = true;
@@ -643,66 +720,12 @@ fn parse_char_metrics_line(line: &str, line_no: usize) -> Result<GlyphMetric, Pa
             }
             "CC" => {
                 let field_line = &line[..field_end];
-                let (name_start, cc_name) = next_token(field_line, value_start).ok_or_else(|| {
-                    ParseError::new(
-                        line_no,
-                        field_column,
-                        "'CC' field is missing its composite glyph name and part count",
-                    )
-                })?;
-                let after_name = name_start + cc_name.len();
-                let (count_start, count_tok) = next_token(field_line, after_name).ok_or_else(|| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, after_name),
-                        "'CC' field is missing its composite part count",
-                    )
-                })?;
-                let count = count_tok.parse::<usize>().map_err(|_| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, count_start),
-                        format!("'CC' part count '{}' is not a valid integer", count_tok),
-                    )
-                })?;
+                let (_, count) = parse_cc_field(field_line, value_start, field_column, line, line_no)?;
                 declared_composite_count = Some(count);
             }
             "PCC" => {
                 let field_line = &line[..field_end];
-                let (name_start, part_name) = next_token(field_line, value_start).ok_or_else(|| {
-                    ParseError::new(line_no, field_column, "'PCC' field is missing its piece name")
-                })?;
-                let after_name = name_start + part_name.len();
-                let (x_start, x_tok) = next_token(field_line, after_name).ok_or_else(|| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, after_name),
-                        "'PCC' field is missing its x displacement",
-                    )
-                })?;
-                let x = x_tok.parse::<f64>().map_err(|_| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, x_start),
-                        format!("'PCC' x displacement '{}' is not a valid number", x_tok),
-                    )
-                })?;
-                let after_x = x_start + x_tok.len();
-                let (y_start, y_tok) = next_token(field_line, after_x).ok_or_else(|| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, after_x),
-                        "'PCC' field is missing its y displacement",
-                    )
-                })?;
-                let y = y_tok.parse::<f64>().map_err(|_| {
-                    ParseError::new(
-                        line_no,
-                        char_column(line, y_start),
-                        format!("'PCC' y displacement '{}' is not a valid number", y_tok),
-                    )
-                })?;
-                composite_parts.push(CompositePart { name: part_name.to_string(), x, y });
+                composite_parts.push(parse_pcc_field(field_line, value_start, field_column, line, line_no)?);
             }
             _ => {}
         }
@@ -746,6 +769,148 @@ fn next_token(s: &str, from: usize) -> Option<(usize, &str)> {
     let after = &s[start..];
     let end = after.find(char::is_whitespace).unwrap_or(after.len());
     Some((start, &s[start..start + end]))
+}
+
+/// Parse a `CC name partCount` field, shared by inline composite fields on
+/// a `CharMetrics` line and standalone lines in a `StartComposites` block.
+fn parse_cc_field(
+    field_line: &str,
+    value_start: usize,
+    field_column: usize,
+    line: &str,
+    line_no: usize,
+) -> Result<(String, usize), ParseError> {
+    let (name_start, cc_name) = next_token(field_line, value_start).ok_or_else(|| {
+        ParseError::new(
+            line_no,
+            field_column,
+            "'CC' field is missing its composite glyph name and part count",
+        )
+    })?;
+    let after_name = name_start + cc_name.len();
+    let (count_start, count_tok) = next_token(field_line, after_name).ok_or_else(|| {
+        ParseError::new(
+            line_no,
+            char_column(line, after_name),
+            "'CC' field is missing its composite part count",
+        )
+    })?;
+    let count = count_tok.parse::<usize>().map_err(|_| {
+        ParseError::new(
+            line_no,
+            char_column(line, count_start),
+            format!("'CC' part count '{}' is not a valid integer", count_tok),
+        )
+    })?;
+    Ok((cc_name.to_string(), count))
+}
+
+/// Parse a `PCC name x y` field, shared by inline composite fields on a
+/// `CharMetrics` line and standalone lines in a `StartComposites` block.
+fn parse_pcc_field(
+    field_line: &str,
+    value_start: usize,
+    field_column: usize,
+    line: &str,
+    line_no: usize,
+) -> Result<CompositePart, ParseError> {
+    let (name_start, part_name) = next_token(field_line, value_start).ok_or_else(|| {
+        ParseError::new(line_no, field_column, "'PCC' field is missing its piece name")
+    })?;
+    let after_name = name_start + part_name.len();
+    let (x_start, x_tok) = next_token(field_line, after_name).ok_or_else(|| {
+        ParseError::new(
+            line_no,
+            char_column(line, after_name),
+            "'PCC' field is missing its x displacement",
+        )
+    })?;
+    let x = x_tok.parse::<f64>().map_err(|_| {
+        ParseError::new(
+            line_no,
+            char_column(line, x_start),
+            format!("'PCC' x displacement '{}' is not a valid number", x_tok),
+        )
+    })?;
+    let after_x = x_start + x_tok.len();
+    let (y_start, y_tok) = next_token(field_line, after_x).ok_or_else(|| {
+        ParseError::new(
+            line_no,
+            char_column(line, after_x),
+            "'PCC' field is missing its y displacement",
+        )
+    })?;
+    let y = y_tok.parse::<f64>().map_err(|_| {
+        ParseError::new(
+            line_no,
+            char_column(line, y_start),
+            format!("'PCC' y displacement '{}' is not a valid number", y_tok),
+        )
+    })?;
+    Ok(CompositePart { name: part_name.to_string(), x, y })
+}
+
+/// Parse a single line within a `StartComposites` / `EndComposites` block:
+/// `CC name numParts ; PCC part1 x1 y1 ; PCC part2 x2 y2 ; ...`.
+fn parse_composite_line(line: &str, line_no: usize) -> Result<CompositeGlyph, ParseError> {
+    let mut name: Option<String> = None;
+    let mut declared_count: Option<usize> = None;
+    let mut parts = Vec::new();
+
+    let mut byte_offset = 0usize;
+    for segment in line.split(';') {
+        let seg_start = byte_offset;
+        byte_offset += segment.len() + 1;
+
+        let field = segment.trim();
+        if field.is_empty() {
+            continue;
+        }
+        let field_start = seg_start + skip_ws(segment);
+        let field_column = char_column(line, field_start);
+        let field_end = seg_start + segment.len();
+        let field_line = &line[..field_end];
+
+        let key_end = field.find(char::is_whitespace).unwrap_or(field.len());
+        let key = &field[..key_end];
+        let value_start = field_start + key_end + skip_ws(&field[key_end..]);
+
+        match key {
+            "CC" => {
+                let (cc_name, count) = parse_cc_field(field_line, value_start, field_column, line, line_no)?;
+                name = Some(cc_name);
+                declared_count = Some(count);
+            }
+            "PCC" => {
+                parts.push(parse_pcc_field(field_line, value_start, field_column, line, line_no)?);
+            }
+            _ => {}
+        }
+    }
+
+    let end_column = char_column(line, line.len());
+    let name = name.ok_or_else(|| {
+        ParseError::new(
+            line_no,
+            end_column,
+            "composite glyph line is missing a 'CC' (name and part count) field",
+        )
+    })?;
+    if let Some(expected) = declared_count {
+        if parts.len() != expected {
+            return Err(ParseError::new(
+                line_no,
+                end_column,
+                format!(
+                    "'CC' declared {} composite parts but {} 'PCC' fields were found",
+                    expected,
+                    parts.len()
+                ),
+            ));
+        }
+    }
+
+    Ok(CompositeGlyph { name, parts })
 }
 
 fn parse_kern_pair_line(line: &str, line_no: usize) -> Result<KernPair, ParseError> {
@@ -1011,5 +1176,52 @@ mod tests {
         assert_eq!(err.line, 2);
         // "IsFixedPitch " is 13 characters, so the value starts at column 14.
         assert_eq!(err.column, 14);
+    }
+
+    #[test]
+    fn parses_composites_block() {
+        let input = "StartFontMetrics 4.1\nStartComposites 1\nCC Aacute 2 ; PCC A 0 0 ; PCC acute 132 0 ;\nEndComposites\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        assert_eq!(metrics.composites.len(), 1);
+        let aacute = &metrics.composites[0];
+        assert_eq!(aacute.name, "Aacute");
+        assert_eq!(aacute.parts.len(), 2);
+        assert_eq!(aacute.parts[0].name, "A");
+        assert_eq!(aacute.parts[1].name, "acute");
+        assert_eq!((aacute.parts[1].x, aacute.parts[1].y), (132.0, 0.0));
+    }
+
+    #[test]
+    fn reports_composite_glyph_count_mismatch() {
+        let input = "StartFontMetrics 4.1\nStartComposites 2\nCC Aacute 1 ; PCC A 0 0 ;\nEndComposites\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 4);
+        assert!(err.message.contains("declared 2 composites but 1"));
+    }
+
+    #[test]
+    fn reports_composite_part_count_mismatch_in_block() {
+        let input = "StartFontMetrics 4.1\nStartComposites 1\nCC Aacute 2 ; PCC A 0 0 ;\nEndComposites\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.message.contains("declared 2 composite parts but 1"));
+    }
+
+    #[test]
+    fn reports_composite_line_missing_cc() {
+        let input = "StartFontMetrics 4.1\nStartComposites 1\nPCC A 0 0 ;\nEndComposites\nEndFontMetrics\n";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert!(err.message.contains("missing a 'CC'"));
+    }
+
+    #[test]
+    fn composites_round_trip_through_json() {
+        let input = "StartFontMetrics 4.1\nStartComposites 1\nCC Aacute 1 ; PCC A 0 0 ;\nEndComposites\nEndFontMetrics\n";
+        let metrics = parse(input).expect("sample should parse");
+        let json = metrics.to_json();
+        assert!(json.contains(
+            "\"composites\":[{\"name\":\"Aacute\",\"parts\":[{\"name\":\"A\",\"x\":0,\"y\":0}]}]"
+        ));
     }
 }

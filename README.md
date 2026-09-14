@@ -90,7 +90,10 @@ The full set of global font metadata keys: `FontName`, `FullName`,
 including each glyph's code, advance width, and PostScript name, its `L`
 ligature substitutions, and its `CC`/`PCC` composite glyph parts; and the
 full `StartKernPairs` / `EndKernPairs` block (`KPX` horizontal kerning
-adjustments between glyph name pairs). Unrecognized header keys are skipped
+adjustments between glyph name pairs); and the full `StartComposites` /
+`EndComposites` block, using the same `CC`/`PCC` syntax as the inline
+composite fields on a char metrics line, but declared on its own instead of
+attached to a glyph's code and width. Unrecognized header keys are skipped
 rather than rejected, since a file with fields this library doesn't
 understand yet is still a valid file.
 

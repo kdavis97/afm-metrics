@@ -51,6 +51,9 @@ fn run_summary(args: impl Iterator<Item = String>) -> ExitCode {
             println!("full name: {}", metrics.full_name.as_deref().unwrap_or("(unknown)"));
             println!("glyphs: {}", metrics.glyphs.len());
             println!("kern pairs: {}", metrics.kern_pairs.len());
+            if !metrics.composites.is_empty() {
+                println!("composites: {}", metrics.composites.len());
+            }
             if let Some(angle) = metrics.italic_angle {
                 println!("italic angle: {}", angle);
             }
